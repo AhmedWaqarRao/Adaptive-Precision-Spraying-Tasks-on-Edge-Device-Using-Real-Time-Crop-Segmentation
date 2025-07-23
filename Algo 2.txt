@@ -1,0 +1,60 @@
+import numpy as np
+
+def knapsack_initialize(model, channel_importance, beta, k=0.5, b=0.1, num_groups=10):
+    """
+    Initializes the knapsack problem by grouping channels and calculating values/constraints.
+
+    Parameters:
+    - model: The pre-trained CNN model.
+    - channel_importance: Dictionary of channel importance scores per layer.
+    - beta: Scenario complexity value (0 to 1).
+    - k: Controls sparsity (higher -> preserves more channels).
+    - b: Minimum fraction of channels to keep.
+    - num_groups: Number of groups to aggregate channels.
+
+    Returns:
+    - values (v): Importance values for each group.
+    - weights_F (wF): FLOPs cost per group.
+    - weights_P (wP): Parameters cost per group.
+    """
+
+    values, weights_F, weights_P = [], [], []
+    total_items = 0  # Initialize t
+
+    for layer_name, importance_scores in channel_importance.items():
+        num_channels = len(importance_scores)
+
+        # Compute lower bound of channels to keep
+        eta = k * (1 - (1 - beta) * np.sqrt(len(values) / len(channel_importance))) + b
+        num_preserved = min(int(num_channels * eta), num_channels)  # Ensure valid range
+
+        # Sort channels by importance (descending order)
+        sorted_indices = np.argsort(-importance_scores)
+
+        # Select channels to prune & preserve
+        pruned_channels = sorted_indices[num_preserved:]
+
+        # Group channels for efficient pruning
+        grouped_pruned_channels = np.array_split(pruned_channels, num_groups)
+
+        # Get layer from model
+        layer = dict(model.named_modules()).get(layer_name, None)
+        if layer is None or not hasattr(layer, "weight"):
+            continue  # Skip if layer is not found or has no weights
+
+        for group in grouped_pruned_channels:
+            if len(group) == 0:
+                continue  # Skip empty groups
+
+            # Compute importance, FLOPs, and Params for the group
+            group_importance = sum(importance_scores[i] for i in group)
+            group_FLOPs = sum(layer.weight.view(-1)[i].numel() for i in group)  # Corrected access
+            group_Params = sum(layer.weight.view(-1)[i].numel() for i in group)  # Corrected access
+
+            values.append(group_importance)
+            weights_F.append(group_FLOPs)
+            weights_P.append(group_Params)
+
+            total_items += 1  # Increment t
+
+    return values, weights_F, weights_P  # Return after processing all layers
